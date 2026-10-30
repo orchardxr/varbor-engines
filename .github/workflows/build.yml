@@ -102,7 +102,11 @@ jobs:
           m = json.load(open("dist/metadata.json"))
           print("Engines for CrossOver %s (revision %s)\n" % (m["crossover"]["version"], m["revision"]))
           for k in ("dxmt", "dxvk"):
-              print("- %s %s (stock %s)" % (k.upper(), m[k]["version"], m[k]["stock_version"]))
+              e = m.get(k) or {}
+              if "version" in e:
+                  print("- %s %s (stock %s)" % (k.upper(), e["version"], e.get("stock_version", "?")))
+              else:
+                  print("- %s: stock, not shipped" % k.upper())
           print("\nLayout and metadata: README.md")
           EOF
           )
