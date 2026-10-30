@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "release_tag": "cx-{crossover.version}",
+  "detect": {
+    "version_file": "CrossOver/lib/python/distversion.pyc",
+    "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+",
+    "public_version_note": "the string after CX_VERSION's value in distversion.pyc; also names CodeWeavers' sources tarball (crossover-sources-<public_version>.tar.gz)",
+    "wine_file": "CrossOver/lib/wine/{unix_arch}-unix/ntdll.so",
+    "wine_regex": "wine-[0-9]+\\.[0-9]+[-0-9a-z.]*",
+    "dxmt_files": "CrossOver/lib/dxmt/{arch}-windows/d3d11.dll",
+    "dxmt_regex": "^v[0-9]+\\.[0-9]+(-[0-9]+-g[0-9a-f]+)?(-varbor\\.[0-9]+)?$",
+    "dxvk_files": "CrossOver/lib/dxvk/{arch}-windows/d3d11.dll",
+    "dxvk_regex": "^(cxaddon-[0-9.]+(-[0-9]+)*(-g[0-9a-f]+)?|v[0-9]+\\.[0-9]+(\\.[0-9]+)?(-[0-9]+-g[0-9a-f]+)?\\+?)(-varbor\\.[0-9]+)?$"
+  },
+  "builds": [
+    {
+      "id": "27.0.0.41073",
+      "build": true,
+      "revision": 1,
+      "crossover": {
+        "version": "27.0.0.41073",
+        "public_version": "20261015",
+        "date": "2026/10/14",
+        "preview": true,
+        "wine": "wine-11.17-8910-g4683e69e153",
+        "unix_arches": ["aarch64", "x86_64"],
+        "notproton_runners": ["crossover-27.0.0.41073-fex", "crossover-27.0.0.41073"]
+      },
+      "sources": {
+        "tarball": "crossover-sources-20261015.tar",
+        "sha256": "a3a723db2f5b148ffb9db659df13750f94eb0ab7601bd8d5650ff48796044bf8",
+        "url": null,
+        "url_note": "CrossOver Preview sources; https://media.codeweavers.com/pub/crossover/source/crossover-sources-20261015.tar.gz was 404 on 2026-10-30, so the tarball came from CodeWeavers outside that directory. Only needed to regenerate or check patches/dxvk/cxaddon-1.10.3/0001 and the DXMT base commit, never by CI."
+      },
+      "dxmt": {
+        "stock": {
+          "version": "v0.80-279-g8f06be3",
+          "arches": ["aarch64-windows", "x86_64-windows", "i386-windows", "aarch64-unix", "x86_64-unix"],
+          "commit_public": false,
+          "commit_note": "8f06be3 is in neither 3Shain/dxmt (all branches and PRs) nor GitHub's commit search. CodeWeavers' sources tarball for this build holds DXMT at exactly fb451568 (v0.80-247), differing only in .gitmodules URLs and -marm64x in build-arm64ec.txt; the shipped binaries carry none of upstream's post-fb451568 string changes (e.g. 186a2327, a22700c7), so 8f06be3 is fb451568 plus CodeWeavers-internal commits. fb451568 is the published source for this build and what we build."
+        },
+        "repo": "https://github.com/3Shain/dxmt.git",
+        "commit": "fb4515681daefb789a4d0f403c4bdbca88f3b3de",
+        "describe": "v0.80-247-gfb451568",
+        "submodules": ["include/native/directx"],
+        "patches": ["patches/dxmt/v0.80-247-gfb451568/0001-d3d11-metal-interop.patch"],
+        "arches": ["arm64ec", "x86_64"],
+        "toolchain": {
+          "llvm": "llvmorg-15.0.7",
+          "wine_arm64ec": "https://github.com/3Shain/wine/releases/download/wine-11.2/wine-11.2.tar.gz",
+          "wine_x86_64": "https://github.com/3Shain/wine/releases/download/v8.16-3shain/wine.tar.gz"
+        },
+        "wine_unix": {
+          "links": {"ntdll.so": ["_NtSetEvent"], "winemac.so": []},
+          "dlsym": ["macdrv_functions", "get_win_data", "release_win_data", "macdrv_view_create_metal_view", "macdrv_view_get_metal_layer", "macdrv_view_release_metal_view"],
+          "note": "winemetal.so links @rpath/ntdll.so and @rpath/winemac.so (resolved from lib/wine/<arch>-unix of the runner) and binds _NtSetEvent from ntdll.so; everything from winemac.so is looked up at run time, first CrossOver's struct macdrv_functions, then the plain macdrv symbols. The PE side talks to winemetal.so over Wine's __wine_unix_call."
+        }
+      },
+      "dxvk": {
+        "stock": {
+          "version": "cxaddon-1.10.3-1-25-g737aacd",
+          "arches": ["x86_64-windows", "i386-windows"]
+        },
+        "repo": "https://github.com/doitsujin/dxvk.git",
+        "commit": "e4fd5e9e8d335e8a2c0814829207cbd421f7e40e",
+        "describe": "v1.10.3",
+        "patches": [
+          "patches/dxvk/cxaddon-1.10.3/0001-crossover-cxaddon-1.10.3.patch",
+          "patches/dxvk/cxaddon-1.10.3/0002-arm64ec.patch"
+        ],
+        "patches_origin": "0001 is sources/dxvk of the sources tarball diffed against upstream v1.10.3, without CodeWeavers' cxlab/ CI files",
+        "arches": ["arm64ec"]
+      }
+    },
+    {
+      "id": "26.3.0.39832",
+      "build": false,
+      "build_note": "x86_64-only (Rosetta) runner. Its DXMT v0.72-25-gf35d839 is not public (f35d839 is not in 3Shain/dxmt) and the 26.3 sources tarball has no sources/dxmt, so there is no published DXMT source for this build. Patch 0001 applies to v0.72 only with a 3-way merge and is untested there.",
+      "revision": 0,
+      "crossover": {
+        "version": "26.3.0.39832",
+        "public_version": "26.3.0",
+        "date": "2026/07/13",
+        "preview": false,
+        "wine": "wine-11.0-8726-g2e2f5fca349",
+        "unix_arches": ["x86_64"],
+        "notproton_runners": ["crossover-26.3.0.39832"]
+      },
+      "sources": {
+        "tarball": "crossover-sources-26.3.0.tar.gz",
+        "sha256": "ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872",
+        "url": "https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz"
+      },
+      "dxmt": {
+        "stock": {
+          "version": "v0.72-25-gf35d839",
+          "arches": ["x86_64-windows", "i386-windows", "x86_64-unix"],
+          "commit_public": false
+        }
+      },
+      "dxvk": {
+        "stock": {
+          "version": "cxaddon-1.10.3-1-25-g737aacd",
+          "arches": ["x86_64-windows", "i386-windows"]
+        },
+        "patches_origin": "sources/dxvk is identical to CX 27.0.0.41073's"
+      }
+    }
+  ]
+}

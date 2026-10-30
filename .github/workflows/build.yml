@@ -1,0 +1,114 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths: [builds.json, patches/**, scripts/**, licenses/**, .github/workflows/build.yml]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: builds.json entry id (empty = all buildable)
+        required: false
+      publish:
+        description: publish the GitHub release cx-<version>
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  LLVM_REF: llvmorg-15.0.7
+  LLVM_MINGW_VERSION: "20260922"
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        run: |
+          m=$(python3 -I scripts/lib/manifest.py matrix)
+          if [ -n "${{ inputs.id }}" ]; then
+            m=$(python3 -I -c 'import json,sys; m=json.loads(sys.argv[1]); m["include"]=[e for e in m["include"] if e["id"]==sys.argv[2]]; print(json.dumps(m))' "$m" "${{ inputs.id }}")
+          fi
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+
+  # LLVM 15 static libs for DXMT's airconv (linked into winemetal.so), one per unix arch. ~30 min each when not cached.
+  llvm:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          key: llvm-${{ env.LLVM_REF }}-${{ matrix.arch }}-macos
+          path: build/toolchains/llvm-15-${{ matrix.arch }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install ninja
+          id=$(python3 -I scripts/lib/manifest.py ids --buildable | head -1)
+          scripts/toolchains.sh "$id" llvm-${{ matrix.arch }}
+
+  build:
+    needs: [matrix, llvm]
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          key: llvm-${{ env.LLVM_REF }}-arm64-macos
+          path: build/toolchains/llvm-15-arm64
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        with:
+          key: llvm-${{ env.LLVM_REF }}-x86_64-macos
+          path: build/toolchains/llvm-15-x86_64
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-macos
+          path: build/toolchains/llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-ucrt-macos-universal
+      - name: Tools
+        run: |
+          brew install meson ninja glslang
+          # Xcode 26+ ships the Metal shader compiler as a separate component
+          xcrun -sdk macosx -f metal || xcodebuild -downloadComponent MetalToolchain
+          xcrun -sdk macosx metal --version
+      - name: Build
+        # No CrossOver in CI: winemetal.so links against stub ntdll.so/winemac.so (scripts/wine-unix-libs.sh)
+        run: scripts/build.sh "${{ matrix.id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: varbor-engines-${{ matrix.tag }}
+          path: dist/*
+      - name: Release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ matrix.tag }}"
+          notes=$(python3 -I - <<'EOF'
+          import json
+          m = json.load(open("dist/metadata.json"))
+          print("Engines for CrossOver %s (revision %s)\n" % (m["crossover"]["version"], m["revision"]))
+          for k in ("dxmt", "dxvk"):
+              print("- %s %s (stock %s)" % (k.upper(), m[k]["version"], m[k]["stock_version"]))
+          print("\nLayout and metadata: README.md")
+          EOF
+          )
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release edit "$tag" --notes "$notes"
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes "$notes"
+          fi
+          gh release upload "$tag" dist/* --clobber
