@@ -7,5 +7,5 @@ id="${1:?usage: $0 <id>  (ids: $(mf ids --buildable | paste -sd' ' -))}"
 [[ "$(mf get "$id" build)" == true ]] || die "$id is not buildable: $(mf get "$id" build_note)"
 "$ROOT/scripts/fetch-sources.sh" "$id"
 "$ROOT/scripts/build-dxmt.sh" "$id"
-"$ROOT/scripts/build-dxvk.sh" "$id"
+if [[ -n "$(mf get "$id" dxvk.repo)" ]]; then "$ROOT/scripts/build-dxvk.sh" "$id"; fi
 "$ROOT/scripts/package.sh" "$id"

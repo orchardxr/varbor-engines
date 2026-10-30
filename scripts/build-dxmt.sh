@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build an entry's DXMT (scripts/fetch-sources.sh first) for its manifest arches, or the ones given.
-#   scripts/build-dxmt.sh <id> [arm64ec] [x86_64]
+#   scripts/build-dxmt.sh <id> [arm64ec] [x86_64] [i386]
 # arm64ec  ARM64EC d3d11/dxgi/d3d10core/winemetal.dll (aarch64-windows: what x86_64 games load on FEX runners)
 #          + aarch64-unix winemetal.so
 # x86_64   x86_64-windows DLLs + x86_64-unix winemetal.so (Rosetta runners)
+# i386     i386-windows DLLs (32-bit games under WoW64; they talk to the x86_64-unix winemetal.so)
 # Output: build/<id>/dxmt/install/<arch>-{windows,unix}. Like CrossOver's build: plain ARM64EC (no -marm64x), no
 # nvapi/nvngx. winemetal.so links against scripts/wine-unix-libs.sh (CX_RUNNER's libs, else stubs).
 set -euo pipefail
@@ -31,6 +32,10 @@ for arch in "${archs[@]}"; do
 		triple=x86_64-w64-mingw32 winearch=x86_64 unixarch=x86_64
 		eval "$("$ROOT/scripts/toolchains.sh" "$id" llvm-x86_64 wine-x86_64)"
 		llvm="$LLVM15_X86_64" wine="$WINE_X86_64" ;;
+	i386)
+		triple=i686-w64-mingw32 winearch=i386 unixarch=x86_64
+		eval "$("$ROOT/scripts/toolchains.sh" "$id" llvm-x86_64 wine-x86_64)"
+		llvm="$LLVM15_X86_64" wine="$WINE_X86_64" ;;
 	*) die "unknown arch $arch" ;;
 	esac
 	# A Wine install for meson: winebuild and import libs from the toolchain Wine, the unix libs from the runner/stubs
@@ -44,6 +49,8 @@ for arch in "${archs[@]}"; do
 	done
 	for l in ntdll.so winemac.so; do ln -s "$unixlibs/$l" "$prefix/lib/wine/$unixarch-unix/$l"; done
 
+	cpu_family="$winearch"
+	[[ $winearch == i386 ]] && cpu_family=x86
 	cross="$OUT/cross-$arch.txt"
 	cat > "$cross" <<-EOF
 	[binaries]
@@ -58,23 +65,31 @@ for arch in "${archs[@]}"; do
 
 	[host_machine]
 	system = 'windows'
-	cpu_family = '$winearch'
+	cpu_family = '$cpu_family'
 	cpu = '$winearch'
 	endian = 'little'
 	EOF
+	opts=()
+	while IFS= read -r o; do [[ -n $o ]] && opts+=("$o"); done < <(mf get "$id" dxmt.meson_options)
 	bdir="$OUT/build-$arch"
 	log="$LOGS/$id-dxmt-$arch.log"
 	echo "==> DXMT $arch $(git -C "$SRC" describe --always), log $log"
 	rm -rf "$bdir" "$OUT/stage-$arch"
 	{
 		meson setup --cross-file "$cross" -Dnative_llvm_path="$llvm" -Dwine_install_path="$prefix" \
-			--buildtype release -Dstrip=true --prefix "$OUT/stage-$arch" "$bdir" "$SRC" &&
+			--buildtype release -Dstrip=true ${opts[@]+"${opts[@]}"} --prefix "$OUT/stage-$arch" "$bdir" "$SRC" &&
 			meson compile -C "$bdir" && meson install -C "$bdir"
 	} > "$log" 2>&1 || { tail -30 "$log"; exit 1; }
 	dst="$OUT/install"
-	rm -rf "$dst/$winearch-windows" "$dst/$unixarch-unix"
-	mkdir -p "$dst/$winearch-windows" "$dst/$unixarch-unix"
+	rm -rf "$dst/$winearch-windows"
+	mkdir -p "$dst/$winearch-windows"
 	for d in d3d11 dxgi d3d10core winemetal; do cp "$OUT/stage-$arch/$winearch-windows/$d.dll" "$dst/$winearch-windows/"; done
-	cp "$OUT/stage-$arch/$unixarch-unix/winemetal.so" "$dst/$unixarch-unix/"
-	file "$dst/$winearch-windows/d3d11.dll" "$dst/$unixarch-unix/winemetal.so" | sed "s|$OUT/||"
+	file "$dst/$winearch-windows/d3d11.dll" | sed "s|$OUT/||"
+	# an i386 build's unix side is the x86_64 one: the x86_64 build installs it
+	if [[ $arch != i386 ]]; then
+		rm -rf "$dst/$unixarch-unix"
+		mkdir -p "$dst/$unixarch-unix"
+		cp "$OUT/stage-$arch/$unixarch-unix/winemetal.so" "$dst/$unixarch-unix/"
+		file "$dst/$unixarch-unix/winemetal.so" | sed "s|$OUT/||"
+	fi
 done

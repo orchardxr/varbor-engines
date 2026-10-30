@@ -1,0 +1,323 @@
+From: VarboR
+Subject: [PATCH] d3d11: IDXMTInteropSurface / IDXMTInteropDevice, Metal interop for in-process native runtimes
+
+---
+ src/d3d11/d3d11_context_def.cpp | 10 ++++++++++
+ src/d3d11/d3d11_context_imm.cpp | 25 +++++++++++++++++++++++++
+ src/d3d11/d3d11_device.cpp      | 60 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ src/d3d11/d3d11_device.hpp      |  3 +++
+ src/d3d11/d3d11_interop.hpp     | 43 +++++++++++++++++++++++++++++++++++++++++++
+ src/d3d11/d3d11_resource.hpp    | 60 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 200 insertions(+), 1 deletion(-)
+
+diff --git a/src/d3d11/d3d11_context_def.cpp b/src/d3d11/d3d11_context_def.cpp
+index 1df3babfeb33825ce8fc14089e0bb1dbf58db495..19ce45240925758b81e894a116372bb0dfdc2065 100644
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -432,6 +432,16 @@ public:
+     return DXGI_ERROR_INVALID_CALL;
+   }
+ 
++  void
++  InteropFlush(WMT::SharedEvent *pEvent, UINT64 *pValue) override {
++    *pEvent = {};
++    *pValue = 0;
++  }
++  void
++  InteropSignal(WMT::Event Event, UINT64 Value) override {}
++  void
++  InteropWait(WMT::Event Event, UINT64 Value) override {}
++
+ private:
+   DeferredContextInternalState ctx_state;
+   null_mutex mutex;
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 60c21a016c10b648bbdc87c9cc7fc0a436b83de2..203c6c99ef6bfcacb780adda39707b632cbb9467 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -587,6 +587,31 @@ public:
+     return S_OK;
+   }
+ 
++  void
++  InteropFlush(WMT::SharedEvent *pEvent, UINT64 *pValue) override {
++    std::lock_guard<d3d11_device_mutex> lock(mutex);
++    Flush();
++    *pEvent = cmd_queue.event;
++    *pValue = cmd_queue.GetCurrentEventSeqId();
++  }
++  void
++  InteropSignal(WMT::Event Event, UINT64 Value) override {
++    std::lock_guard<d3d11_device_mutex> lock(mutex);
++    InvalidateCurrentPass(true);
++    EmitOP([event = WMT::Reference<WMT::Event>(Event), Value](ArgumentEncodingContext &enc) mutable {
++      enc.signalEvent(std::move(event), Value);
++    });
++    Flush();
++  }
++  void
++  InteropWait(WMT::Event Event, UINT64 Value) override {
++    std::lock_guard<d3d11_device_mutex> lock(mutex);
++    InvalidateCurrentPass(true);
++    EmitOP([event = WMT::Reference<WMT::Event>(Event), Value](ArgumentEncodingContext &enc) mutable {
++      enc.waitEvent(std::move(event), Value);
++    });
++  }
++
+ private:
+   std::vector<Com<IMTLD3DOcclusionQuery>> pending_occlusion_queries;
+   CommandQueue &cmd_queue;
+diff --git a/src/d3d11/d3d11_device.cpp b/src/d3d11/d3d11_device.cpp
+index 4e84817e1629bc2feaf69f157aa801d79b7a6db0..b3a2dc9a3e9bf78bfb8d9eb555f00f2d98a1e1e7 100644
+--- a/src/d3d11/d3d11_device.cpp
++++ b/src/d3d11/d3d11_device.cpp
+@@ -1104,6 +1104,57 @@ private:
+   D3D11Multithread d3dmt_;
+ };
+ 
++class MTLD3D11InteropDevice final : public IDXMTInteropDevice {
++public:
++  MTLD3D11InteropDevice(IUnknown *container, MTLD3D11Device *device) : container_(container), device_(device) {}
++
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) final {
++    return container_->QueryInterface(riid, ppvObject);
++  }
++
++  ULONG STDMETHODCALLTYPE AddRef() final { return container_->AddRef(); }
++
++  ULONG STDMETHODCALLTYPE Release() final { return container_->Release(); }
++
++  HRESULT STDMETHODCALLTYPE GetMetalDevice(UINT64 *pDevice) final {
++    if (!pDevice)
++      return E_POINTER;
++    *pDevice = device_->GetMTLDevice().handle;
++    return S_OK;
++  }
++
++  void STDMETHODCALLTYPE LockSubmissionQueue() final { device_->mutex.lock(); }
++
++  void STDMETHODCALLTYPE ReleaseSubmissionQueue() final { device_->mutex.unlock(); }
++
++  HRESULT STDMETHODCALLTYPE FlushRenderingCommands(UINT64 *pEvent, UINT64 *pValue) final {
++    if (!pEvent || !pValue)
++      return E_POINTER;
++    WMT::SharedEvent event;
++    device_->GetImmediateContextPrivate()->InteropFlush(&event, pValue);
++    *pEvent = event.handle;
++    return S_OK;
++  }
++
++  HRESULT STDMETHODCALLTYPE SignalEvent(UINT64 Event, UINT64 Value) final {
++    if (!Event)
++      return E_INVALIDARG;
++    device_->GetImmediateContextPrivate()->InteropSignal(WMT::Event{Event}, Value);
++    return S_OK;
++  }
++
++  HRESULT STDMETHODCALLTYPE WaitEvent(UINT64 Event, UINT64 Value) final {
++    if (!Event)
++      return E_INVALIDARG;
++    device_->GetImmediateContextPrivate()->InteropWait(WMT::Event{Event}, Value);
++    return S_OK;
++  }
++
++private:
++  IUnknown *container_;
++  MTLD3D11Device *device_;
++};
++
+ /**
+  * \brief D3D11 device container
+  *
+@@ -1119,7 +1170,8 @@ public:
+       : adapter_(adapter), device(std::move(device)),
+         cmd_queue_(this->device->queue()),
+         d3d11_device_(this, adapter, feature_level, feature_flags,
+-                      *this->device.get()) {
++                      *this->device.get()),
++        interop_(this, &d3d11_device_) {
+     if (adapter_->GetLocalD3DKMT()) {
+       D3DKMT_CREATEDEVICE create = {};
+       create.hAdapter = adapter_->GetLocalD3DKMT();
+@@ -1176,6 +1228,11 @@ public:
+       return S_OK;
+     }
+ 
++    if (riid == __uuidof(IDXMTInteropDevice)) {
++      *ppvObject = ref_and_cast<IDXMTInteropDevice>(&interop_);
++      return S_OK;
++    }
++
+     if (riid == __uuidof(ID3D11Debug))
+       return E_NOINTERFACE;
+ 
+@@ -1277,6 +1334,7 @@ private:
+   std::unique_ptr<Device> device;
+   CommandQueue &cmd_queue_;
+   MTLD3D11DeviceImpl d3d11_device_;
++  MTLD3D11InteropDevice interop_;
+ };
+ 
+ Com<IMTLDXGIDevice> CreateD3D11Device(std::unique_ptr<Device> &&device,
+diff --git a/src/d3d11/d3d11_device.hpp b/src/d3d11/d3d11_device.hpp
+index 37ea5c9bbb5cf64765702a40a41edad821cfb0ea..34abd4f23bcb2a3d0777c79918be6423bed3e879 100644
+--- a/src/d3d11/d3d11_device.hpp
++++ b/src/d3d11/d3d11_device.hpp
+@@ -18,6 +18,9 @@ DEFINE_COM_INTERFACE("3a3f085a-d0fe-4324-b0ae-fe04de18571c",
+   virtual void PrepareFlush() = 0;
+   virtual void Commit() = 0;
+   virtual void SOGetTargetsWithOffsets(UINT NumBuffers, REFIID riid, void ** ppSOTargets, UINT *pOffsets) = 0;
++  virtual void InteropFlush(WMT::SharedEvent *pEvent, UINT64 *pValue) = 0;
++  virtual void InteropSignal(WMT::Event Event, UINT64 Value) = 0;
++  virtual void InteropWait(WMT::Event Event, UINT64 Value) = 0;
+ };
+ 
+ namespace dxmt {
+diff --git a/src/d3d11/d3d11_interop.hpp b/src/d3d11/d3d11_interop.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..69c1ef05149f117be595986f8a8f12913f6f197e
+--- /dev/null
++++ b/src/d3d11/d3d11_interop.hpp
+@@ -0,0 +1,43 @@
++#pragma once
++
++/*
++ * Metal interop for native code in the same process (an OpenVR/OpenXR runtime bridge), in the spirit of DXVK's
++ * IDXGIVkInteropSurface / IDXGIVkInteropDevice. Handles are the unix-side Objective-C object pointers
++ * (id<MTLTexture>, id<MTLDevice>, id<MTLSharedEvent>), unretained: they stay valid while the D3D11 object lives.
++ */
++
++#include "com/com_guid.hpp"
++#include "d3d11.h"
++
++struct DXMT_INTEROP_TEXTURE_INFO {
++  UINT64 Texture;     // id<MTLTexture> of the resource's current allocation
++  UINT64 Device;      // id<MTLDevice>
++  UINT PixelFormat;   // MTLPixelFormat
++  UINT TextureType;   // MTLTextureType
++  UINT Usage;         // MTLTextureUsage
++  UINT Width;
++  UINT Height;
++  UINT Depth;
++  UINT ArraySize;
++  UINT MipLevels;
++  UINT SampleCount;
++  UINT D3D11Usage;    // D3D11_USAGE: only DEFAULT/IMMUTABLE textures keep their allocation
++};
++
++DEFINE_COM_INTERFACE("ee7b5b9d-b703-46a9-ac7f-1cc1dddd988b", IDXMTInteropDevice) : public IUnknown {
++  virtual HRESULT STDMETHODCALLTYPE GetMetalDevice(UINT64 *pDevice) = 0;
++  /* ID3D11Multithread::Enter/Leave: keeps other threads off the immediate context between the calls below */
++  virtual void STDMETHODCALLTYPE LockSubmissionQueue() = 0;
++  virtual void STDMETHODCALLTYPE ReleaseSubmissionQueue() = 0;
++  /* Commits all work recorded on the immediate context; *pEvent reaches *pValue once it has completed on the GPU */
++  virtual HRESULT STDMETHODCALLTYPE FlushRenderingCommands(UINT64 *pEvent, UINT64 *pValue) = 0;
++  /* GPU-side signal of an id<MTLSharedEvent> after all work recorded so far (commits it) */
++  virtual HRESULT STDMETHODCALLTYPE SignalEvent(UINT64 Event, UINT64 Value) = 0;
++  /* Work recorded after this call waits on the GPU until the id<MTLSharedEvent> reaches Value */
++  virtual HRESULT STDMETHODCALLTYPE WaitEvent(UINT64 Event, UINT64 Value) = 0;
++};
++
++DEFINE_COM_INTERFACE("0cccd1b1-1a29-44b5-a030-04f28fa3b32b", IDXMTInteropSurface) : public IUnknown {
++  virtual HRESULT STDMETHODCALLTYPE GetDevice(IDXMTInteropDevice **ppDevice) = 0;
++  virtual HRESULT STDMETHODCALLTYPE GetMetalTextureInfo(DXMT_INTEROP_TEXTURE_INFO *pInfo) = 0;
++};
+diff --git a/src/d3d11/d3d11_resource.hpp b/src/d3d11/d3d11_resource.hpp
+index 27b62a438518ee21c327bbbf02356a1f749cee2f..615063f55ec7537a45c1be029dd5ebcc48b3c36d 100644
+--- a/src/d3d11/d3d11_resource.hpp
++++ b/src/d3d11/d3d11_resource.hpp
+@@ -8,6 +8,7 @@
+ #include "com/com_guid.hpp"
+ #include "d3d11_view.hpp"
+ #include "dxgi_resource.hpp"
++#include "d3d11_interop.hpp"
+ #include "dxmt_resource_binding.hpp"
+ #include "log/log.hpp"
+ #include "../d3d10/d3d10_buffer.hpp"
+@@ -161,6 +162,56 @@ GetTexture(ID3D11Resource *pResource) {
+   return static_cast<D3D11ResourceCommon *>(pResource)->texture();
+ }
+ 
++template <typename IResource> class MTLD3D11InteropSurface final : public IDXMTInteropSurface {
++public:
++  MTLD3D11InteropSurface(IResource *pResource, MTLD3D11Device *pDevice) : resource_(pResource), device_(pDevice) {}
++
++  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) final {
++    return resource_->QueryInterface(riid, ppvObject);
++  }
++
++  ULONG STDMETHODCALLTYPE AddRef() final { return resource_->AddRef(); }
++
++  ULONG STDMETHODCALLTYPE Release() final { return resource_->Release(); }
++
++  HRESULT STDMETHODCALLTYPE GetDevice(IDXMTInteropDevice **ppDevice) final {
++    if (!ppDevice)
++      return E_POINTER;
++    return device_->QueryInterface(__uuidof(IDXMTInteropDevice), (void **)ppDevice);
++  }
++
++  HRESULT STDMETHODCALLTYPE GetMetalTextureInfo(DXMT_INTEROP_TEXTURE_INFO *pInfo) final {
++    if (!pInfo)
++      return E_POINTER;
++    auto texture = resource_->texture();
++    if (!texture || !texture->current())
++      return E_FAIL;
++    D3D11_RESOURCE_DIMENSION dim;
++    resource_->GetType(&dim);
++    if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
++      return E_NOTIMPL;
++    D3D11_TEXTURE2D_DESC desc;
++    resource_->GetDesc(&desc);
++    pInfo->Texture = texture->current()->texture().handle;
++    pInfo->Device = device_->GetMTLDevice().handle;
++    pInfo->PixelFormat = texture->pixelFormat();
++    pInfo->TextureType = texture->textureType();
++    pInfo->Usage = texture->usage();
++    pInfo->Width = texture->width();
++    pInfo->Height = texture->height();
++    pInfo->Depth = texture->depth();
++    pInfo->ArraySize = desc.ArraySize;
++    pInfo->MipLevels = desc.MipLevels;
++    pInfo->SampleCount = texture->sampleCount();
++    pInfo->D3D11Usage = desc.Usage;
++    return pInfo->Texture ? S_OK : E_FAIL;
++  }
++
++private:
++  IResource *resource_;
++  MTLD3D11Device *device_;
++};
++
+ template <typename tag, typename... Base>
+ class TResourceBase : public MTLD3D11DeviceChild<D3D11ResourceCommon, Base...> {
+ public:
+@@ -169,6 +220,7 @@ public:
+             device),
+         desc(desc),
+         dxgi_resource(new MTLDXGIResource<TResourceBase<tag, Base...>>(this)),
++        interop_surface(this, device),
+         d3d10(reinterpret_cast<tag::COM *>(this), device->GetImmediateContextPrivate()) {}
+ 
+   template <std::size_t n> HRESULT ResolveBase(REFIID riid, void **ppvObject) {
+@@ -217,6 +269,13 @@ public:
+       return S_OK;
+     }
+ 
++    if (riid == __uuidof(IDXMTInteropSurface)) {
++      if (tag::dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D || !this->texture())
++        return E_NOINTERFACE;
++      *ppvObject = ref(&interop_surface);
++      return S_OK;
++    }
++
+     if (logQueryInterfaceError(__uuidof(typename tag::COM), riid)) {
+       WARN("D3D11Resource(", tag::debug_name ,"): Unknown interface query ", str::format(riid));
+     }
+@@ -286,6 +345,7 @@ public:
+ protected:
+   tag::DESC1 desc;
+   std::unique_ptr<IDXGIResource1> dxgi_resource;
++  MTLD3D11InteropSurface<TResourceBase<tag, Base...>> interop_surface;
+   tag::D3D10_IMPL d3d10;
+ };
+ 

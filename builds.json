@@ -74,9 +74,8 @@
     },
     {
       "id": "26.3.0.39832",
-      "build": false,
-      "build_note": "x86_64-only (Rosetta) runner. Its DXMT v0.72-25-gf35d839 is not public (f35d839 is not in 3Shain/dxmt) and the 26.3 sources tarball has no sources/dxmt, so there is no published DXMT source for this build. Patch 0001 applies to v0.72 only with a 3-way merge and is untested there.",
-      "revision": 0,
+      "build": true,
+      "revision": 1,
       "crossover": {
         "version": "26.3.0.39832",
         "public_version": "26.3.0",
@@ -95,7 +94,29 @@
         "stock": {
           "version": "v0.72-25-gf35d839",
           "arches": ["x86_64-windows", "i386-windows", "x86_64-unix"],
-          "commit_public": false
+          "commit_public": false,
+          "commit_note": "f35d839 is in no branch, tag or PR of 3Shain/dxmt, and the 26.3 sources tarball holds no DXMT (sources/ has dxvk, moltenvk, vkd3d, wine, ... but no dxmt, nested archives included). The shipped binaries are a v0.72 maintenance branch: they have upstream's later nvapi stubs (a60483b7, cffcdb47, f18b1c42: NvAPI_GPU_GetArchInfo, GetBusType, GetMemoryInfoEx) but not DXMT_SHADER_CACHE (44c6fc57, 9 commits after v0.72 on main), so v0.72 plus cherry-picks. We build the public v0.72 tag."
+        },
+        "repo": "https://github.com/3Shain/dxmt.git",
+        "commit": "3d8d2aa15564401cbc978014950b14aa87c686c0",
+        "describe": "v0.72",
+        "submodules": ["include/native/directx"],
+        "patches": [
+          "patches/dxmt/v0.72/0001-util-fix-compilation-with-Xcode-27-beta.patch",
+          "patches/dxmt/v0.72/0002-airconv-fix-compile-metal-shader-with-Xcode-27.patch",
+          "patches/dxmt/v0.72/0003-d3d11-metal-interop.patch"
+        ],
+        "patches_origin": "0001 and 0002 are upstream e67727f2 and 06065754, build fixes for current toolchains (libc++ without transitive <functional>/<iterator>, Xcode 27's Metal atomics); 0003 is ours",
+        "arches": ["x86_64", "i386"],
+        "meson_options": ["-Dwine_builtin_dll=true"],
+        "toolchain": {
+          "llvm": "llvmorg-15.0.7",
+          "wine_x86_64": "https://github.com/3Shain/wine/releases/download/v8.16-3shain/wine.tar.gz"
+        },
+        "wine_unix": {
+          "links": {"ntdll.so": ["_NtSetEvent"], "winemac.so": []},
+          "dlsym": ["macdrv_functions", "get_win_data", "release_win_data", "macdrv_view_create_metal_view", "macdrv_view_get_metal_layer", "macdrv_view_release_metal_view"],
+          "note": "As for 27.0.0.41073. CX 26.3's winemac.drv (sources/wine/dlls/winemac.drv/d3dmetal.c) exports struct macdrv_functions_t, and its d3dmetal_macdrv_win_data starts hwnd, cocoa_window, cocoa_view, client_cocoa_view: the prefix v0.72's winemetal_unix.c reads."
         }
       },
       "dxvk": {
@@ -103,7 +124,8 @@
           "version": "cxaddon-1.10.3-1-25-g737aacd",
           "arches": ["x86_64-windows", "i386-windows"]
         },
-        "patches_origin": "sources/dxvk is identical to CX 27.0.0.41073's"
+        "patches_origin": "sources/dxvk is identical to CX 27.0.0.41073's",
+        "note": "not built: a Rosetta-only runner loads CrossOver's stock x86_64/i386 DXVK"
       }
     }
   ]

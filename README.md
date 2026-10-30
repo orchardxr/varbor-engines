@@ -18,13 +18,13 @@ CrossOver version, and a new CrossOver build only needs a new entry here.
 
 ```
 builds.json                       the manifest: one entry per CrossOver build
-patches/dxmt/<base describe>/     DXMT patches, by the DXMT commit they apply to
+patches/dxmt/<base describe>/     DXMT patches, by the DXMT commit they apply to (v0.80-247-gfb451568, v0.72)
 patches/dxvk/cxaddon-1.10.3/      0001 = CrossOver's DXVK fork as a diff on upstream v1.10.3; 0002 = ARM64EC fixes
 licenses/                         license texts for code linked into the binaries that the sources don't carry
 scripts/detect-runner.sh          print a runner's CrossOver/Wine/DXMT/DXVK versions and its manifest entry
-scripts/build.sh <id>             fetch-sources + build-dxmt + build-dxvk + package
+scripts/build.sh <id>             fetch-sources + build-dxmt + build-dxvk (if the entry has a DXVK build) + package
 scripts/fetch-sources.sh <id>     build/<id>/src/{dxmt,dxvk}: manifest commit + patches as commits + version tag
-scripts/build-dxmt.sh <id>        ARM64EC and x86_64 DXMT
+scripts/build-dxmt.sh <id>        DXMT for the entry's arches: arm64ec, x86_64, i386
 scripts/build-dxvk.sh <id>        ARM64EC DXVK
 scripts/package.sh <id>           dist/: release tarball, source tarball, metadata.json, SHA256SUMS
 scripts/toolchains.sh             llvm-mingw, LLVM 15, Wine toolchains (fetched/built into build/toolchains)
@@ -55,10 +55,11 @@ Entry:
 | `sources` | CodeWeavers' sources tarball: name, sha256, public URL (null if not public) |
 | `dxmt.stock` | the DXMT version string the runner ships, its arch dirs, and whether that commit is public |
 | `dxmt.repo` / `commit` / `describe` | what we build: upstream repo and the commit (full sha) |
-| `dxmt.submodules`, `patches`, `arches` | submodules to init, patches in order, arches to build (`arm64ec`, `x86_64`) |
+| `dxmt.submodules`, `patches`, `arches` | submodules to init, patches in order, arches to build (`arm64ec`, `x86_64`, `i386`) |
+| `dxmt.meson_options` | extra `meson setup` options (v0.72 needs `-Dwine_builtin_dll=true`, later DXMT defaults to it) |
 | `dxmt.toolchain` | LLVM ref; Wine toolchains whose import libs and winebuild the PE side uses |
 | `dxmt.wine_unix` | what `winemetal.so` needs from CrossOver's Wine (below) |
-| `dxvk.stock`, `repo`, `commit`, `describe`, `patches`, `patches_origin`, `arches` | the same for DXVK |
+| `dxvk.stock`, `repo`, `commit`, `describe`, `patches`, `patches_origin`, `arches` | the same for DXVK; no `repo` means no DXVK is built or shipped (`note` says why) |
 
 ### Detecting a runner
 
@@ -74,6 +75,8 @@ A runner is a CrossOver root (`CrossOver.app/Contents/SharedSupport/CrossOver`, 
 
 Our builds carry `-varbor.<revision>` on the base version, e.g. `v0.80-247-gfb451568-varbor.1` and
 `cxaddon-1.10.3-1-25-g737aacd-varbor.1`, so VarboR (and DXMT/DXVK's own log lines) can tell them from stock.
+`detect-runner.sh` reports such a runner (a clone with our engines) as `DXMT from varbor-engines (…)` rather than as
+differing from stock.
 
 ```
 $ scripts/detect-runner.sh            # all NotProton runners; or pass paths; --json for machine output
@@ -88,14 +91,39 @@ dxvk:       x86_64-windows   cxaddon-1.10.3-1-25-g737aacd
 entry:      27.0.0.41073 (supported), release cx-27.0.0.41073
 ```
 
-### DXMT base commit vs. what CrossOver ships
+### Upstream versions
 
-CrossOver's DXMT version string names a commit of CodeWeavers' DXMT branch, which need not be public. For
-27.0.0.41073 the runner says `v0.80-279-g8f06be3`, but 8f06be3 is in no branch or PR of 3Shain/dxmt. CodeWeavers'
-sources tarball for that build (`crossover-sources-20261015.tar`, `sources/dxmt`) is exactly upstream `fb451568`
-(`v0.80-247`) apart from `.gitmodules` URLs and `-marm64x` in `build-arm64ec.txt`, and the shipped binaries carry
-none of upstream's string changes after fb451568. So `commit` is the published source for the build, and
-`stock.version` the string to detect it by. The manifest records both.
+CrossOver's DXMT version string names a commit of CodeWeavers' DXMT branch, which need not be public. `commit` is the
+public upstream commit we build, `stock.version` the string to detect the runner by; the manifest records both.
+
+**27.0.0.41073** ships `v0.80-279-g8f06be3`: 32 commits past `fb451568` (`v0.80-247`). 8f06be3 is in no branch, tag
+or PR of 3Shain/dxmt, and none of upstream's commits after fb451568 is in the shipped binaries under another hash:
+
+- CodeWeavers' sources tarball for the build (`crossover-sources-20261015.tar`, `sources/dxmt`) is exactly
+  fb451568 apart from `.gitmodules` URLs and `-marm64x` in `build-arm64ec.txt`.
+- Upstream main has 20 commits between fb451568 and the build date (2026/10/14; 830eb419 … 186a2327, committed
+  2026-10-05 to 10-12). Their string changes are missing from the shipped DLLs: a22700c7's
+  `[CacheWriter] Failed to resolve cache path` (the binaries still have the old copy-paste `[CacheReader]` one) and
+  186a2327's `map-on-default` warning.
+- The other branch that reaches the right count, the DXIL work (PR 232, e94c312f + 17 commits = v0.80-279 on
+  2026-10-09), adds dozens of `dxil: …` errors to `winemetal.so`'s airconv; the shipped `winemetal.so` has none.
+- Strings, `DXMT_*` environment variables, config keys and PE exports of d3d11/dxgi/d3d10core/winemetal.dll match our
+  fb451568 build one for one (besides our patch's `DXMT_INTEROP_TEXTURE_INFO`). Everything else that differs is the
+  toolchain: CodeWeavers' Wine import libs (`__wine_load_unix_lib`, `LdrGetDllHandle`), an LLVM with zlib and
+  without assertions in `winemetal.so`, and their code signature.
+
+So the 32 commits are CodeWeavers-internal (packaging, merges) with no code change visible in the binaries, and
+fb451568 stays the base. No later upstream commit is equivalent.
+
+**26.3.0.39832** ships `v0.72-25-gf35d839`. f35d839 is not public, and the 26.3 sources tarball has no DXMT at all
+(`sources/` holds dxvk, moltenvk, vkd3d, wine and others; none of its nested archives has DXMT either). The binaries
+are a v0.72 maintenance branch, not main: they have upstream's later nvapi stubs (a60483b7, cffcdb47, f18b1c42:
+`NvAPI_GPU_GetArchInfo`, `GetBusType`, `GetMemoryInfoEx`) but not `DXMT_SHADER_CACHE` (44c6fc57, 9 commits after
+v0.72 on main). We build the public `v0.72` tag (3d8d2aa1) with two upstream build fixes for current toolchains
+(e67727f2, 06065754) and our interop patch, ported: v0.72 has everything it needs (the immediate context's
+`ID3D11Fence` Signal/Wait encode `MTLSharedEvent` signal/wait, the command queue's event and sequence id); only the
+resource and context plumbing differs (no keyed mutex, `texture()` returns `Rc<Texture>`, no mip count on
+`Texture`). Our i386 DLLs ship too, so 32-bit games and our `winemetal.so` always speak the same unix-call table.
 
 ### DXMT and CrossOver's Wine
 
@@ -139,6 +167,9 @@ varbor-engines-cx-27.0.0.41073/
   licenses/
 ```
 
+`cx-26.3.0.39832` (Rosetta only) has `dxmt/x86_64-windows`, `dxmt/i386-windows` and `dxmt/x86_64-unix`, and no
+`dxvk/`: the runner's stock x86_64/i386 DXVK is what it loads.
+
 `metadata.json`:
 
 ```json
@@ -171,8 +202,9 @@ varbor-engines-cx-27.0.0.41073/
 3. If `revision` is newer than what VarboR has cached, download the tarball, check it against `SHA256SUMS`, and each
    file against `metadata.files`.
 4. Never write into the user's runner. Make an APFS clone of it (`cp -c -R`) and overlay the files into the clone's
-   `CrossOver/lib/dxmt/<arch>-{windows,unix}/` and `CrossOver/lib/dxvk/aarch64-windows/`. Everything else, including
-   stock `nvapi64.dll`/`nvngx.dll`, i386 DXMT and the x86_64/i386 DXVK, stays as shipped. `CX_GRAPHICS_BACKEND`
+   `CrossOver/lib/dxmt/<arch>-{windows,unix}/` and `CrossOver/lib/dxvk/aarch64-windows/` (whichever the release
+   has). Everything else, including stock `nvapi64.dll`/`nvngx.dll`, the arches a release lacks and the x86_64/i386
+   DXVK, stays as shipped. `CX_GRAPHICS_BACKEND`
    (`dxmt` default, or `dxvk`) picks the engine, as in stock CrossOver.
 5. Record the installed `revision` and file hashes in the clone to detect staleness.
 
@@ -217,9 +249,9 @@ What CI cannot do:
 ## Licenses and credits
 
 - **DXMT** by Feifan He for CodeWeavers, <https://github.com/3Shain/dxmt>: LGPL-2.1-or-later since after v0.80
-  (earlier releases were MIT; `LICENSE.OLD`). The release tarball includes `DXMT-LICENSE`, `DXMT-COPYING.LIB` and
-  `DXMT-LICENSE.OLD`; the `-src` tarball of each release holds the complete patched source the binaries were built
-  from. Our DXMT patches are under the same license.
+  (earlier releases, v0.72 included, were MIT; `LICENSE.OLD`). The release tarball includes the base commit's
+  `DXMT-LICENSE` (and `DXMT-COPYING.LIB`, `DXMT-LICENSE.OLD` where present); the `-src` tarball of each release holds
+  the complete patched source the binaries were built from. Our DXMT patches are under the same license as the base.
 - **DXVK** by Philip Rebohle, Joshua Ashton and contributors, <https://github.com/doitsujin/dxvk>: zlib/libpng
   license (`DXVK-LICENSE`).
 - **CrossOver's DXVK changes** (`cxaddon-1.10.3`, `patches/dxvk/cxaddon-1.10.3/0001`) are by CodeWeavers, Inc.,

@@ -9,7 +9,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 id="${1:?usage: $0 <id> [dxmt] [dxvk]}"
 shift
 libs=("$@")
-[[ ${#libs[@]} -gt 0 ]] || libs=(dxmt dxvk)
+if [[ ${#libs[@]} == 0 ]]; then
+	for lib in dxmt dxvk; do [[ -n "$(mf get "$id" "$lib.repo")" ]] && libs+=("$lib"); done
+fi
 
 export GIT_AUTHOR_NAME=VarboR GIT_AUTHOR_EMAIL=varbor@users.noreply.github.com
 export GIT_COMMITTER_NAME=VarboR GIT_COMMITTER_EMAIL=varbor@users.noreply.github.com

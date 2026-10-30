@@ -61,8 +61,16 @@ detect_one() {
 		local want_dxmt want_dxvk
 		want_dxmt="$(mf get "$entry" dxmt.stock.version)"
 		want_dxvk="$(mf get "$entry" dxvk.stock.version)"
-		if printf '%s\n' "$dxmt" | cut -f2 | grep -qv -x -F "$want_dxmt"; then note+="DXMT differs from stock $want_dxmt; "; fi
-		if printf '%s\n' "$dxvk" | cut -f2 | grep -qv -x -F "$want_dxvk"; then note+="DXVK differs from stock $want_dxvk; "; fi
+		local lib got want
+		for lib in DXMT DXVK; do
+			if [[ $lib == DXMT ]]; then got="$dxmt" want="$want_dxmt"; else got="$dxvk" want="$want_dxvk"; fi
+			# a clone with our engines (VarboR's own, -varbor.<revision>) next to stock arches is expected, not foreign
+			if printf '%s\n' "$got" | cut -f2 | grep -qE -- '-varbor\.[0-9]+$'; then
+				note+="$lib from varbor-engines ($(printf '%s\n' "$got" | cut -f2 | grep -E -- '-varbor\.[0-9]+$' | sort -u | paste -sd, -)); "
+			elif printf '%s\n' "$got" | cut -f2 | grep -qv -x -F "$want"; then
+				note+="$lib differs from stock $want; "
+			fi
+		done
 		note="${note%; }"
 	fi
 	if [[ $json == 1 ]]; then

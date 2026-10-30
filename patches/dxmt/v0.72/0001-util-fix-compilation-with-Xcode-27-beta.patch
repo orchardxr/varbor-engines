@@ -1,0 +1,38 @@
+From e67727f28f8e218ac1aaa591a70d5f755a944386 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pawe=C5=82=20Ko=C5=82odziejski?= <aquadran@gmail.com>
+Date: Tue, 25 Aug 2026 16:07:54 +0200
+Subject: [PATCH] fix(util): fix compilation with Xcode 27 beta
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Paweł Kołodziejski <aquadran@gmail.com>
+---
+ include/ftl.hpp             | 1 +
+ src/util/sha1/sha1_util.hpp | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/include/ftl.hpp b/include/ftl.hpp
+index c20f48fa08a45d7c1735845ebe0da944faf5a853..63ecef2b160559b8a890033bc759e5879aab802c 100644
+--- a/include/ftl.hpp
++++ b/include/ftl.hpp
+@@ -3,6 +3,7 @@
+ #include <utility>
+ #include <vector>
+ #include <algorithm>
++#include <iterator>
+ 
+ template <class Tp, typename Func>
+ auto operator | (const std::vector<Tp> &vec, Func &&f)  {
+diff --git a/src/util/sha1/sha1_util.hpp b/src/util/sha1/sha1_util.hpp
+index 8197c5ef71c49ada46af08c1c17ffc73b8790405..c933ee438a90586b40e26ff20b4979f9543dccb2 100644
+--- a/src/util/sha1/sha1_util.hpp
++++ b/src/util/sha1/sha1_util.hpp
+@@ -13,6 +13,7 @@
+ #include <cstdint>
+ #include <cstring>
+ #include <string>
++#include <functional>
+ #include "./sha1.h"
+ 
+ namespace dxmt {

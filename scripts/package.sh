@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Package an entry's built engines as release assets in dist/:
-#   varbor-engines-<tag>.tar.gz       dxmt/<arch>-{windows,unix}/*, dxvk/aarch64-windows/*, licenses/, metadata.json
+#   varbor-engines-<tag>.tar.gz       dxmt/<arch>-{windows,unix}/*, dxvk/aarch64-windows/* (entries with a DXVK
+#                                     build), licenses/, metadata.json
 #   varbor-engines-<tag>-src.tar.gz   the patched DXMT/DXVK sources the binaries were built from (DXMT is LGPL)
 #   metadata.json                     the same metadata, for VarboR to read without the tarball
 #   SHA256SUMS
@@ -13,8 +14,10 @@ name="varbor-engines-$tag"
 stage="$BUILD/$id/package/$name"
 rm -rf "$BUILD/$id/package"
 mkdir -p "$stage/licenses" "$DIST"
+libs=()
+for lib in dxmt dxvk; do [[ -n "$(mf get "$id" "$lib.repo")" ]] && libs+=("$lib"); done
 
-for lib in dxmt dxvk; do
+for lib in "${libs[@]}"; do
 	inst="$BUILD/$id/$lib/install"
 	[[ -d $inst ]] || die "no $inst (scripts/build-$lib.sh $id)"
 	mkdir -p "$stage/$lib"
@@ -29,7 +32,7 @@ cp "$ROOT/licenses/"* "$stage/licenses/"
 # Sources: each worktree as git archive (DXMT with its directx headers submodule), plus our patches and manifest
 srcstage="$BUILD/$id/package/$name-src"
 mkdir -p "$srcstage"
-for lib in dxmt dxvk; do
+for lib in "${libs[@]}"; do
 	src="$BUILD/$id/src/$lib"
 	git -C "$src" archive --prefix="$lib/" HEAD | tar -x -C "$srcstage"
 	git -C "$src" submodule foreach --quiet 'echo $sm_path' | while IFS= read -r sm; do
@@ -41,7 +44,8 @@ cp -R "$ROOT/patches" "$ROOT/builds.json" "$ROOT/README.md" "$srcstage/"
 wine_unix="stub"
 [[ -n ${CX_RUNNER:-} ]] && wine_unix="runner"
 python3 -I - "$ROOT/builds.json" "$id" "$tag" "$stage" "$ROOT" "$wine_unix" \
-	"$(git -C "$BUILD/$id/src/dxmt" describe --always)" "$(git -C "$BUILD/$id/src/dxvk" describe --always)" \
+	"$(git -C "$BUILD/$id/src/dxmt" describe --always)" \
+	"$([[ -d "$BUILD/$id/src/dxvk" && -n "$(mf get "$id" dxvk.repo)" ]] && git -C "$BUILD/$id/src/dxvk" describe --always)" \
 	"$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)" "${LLVM_MINGW_VERSION}" <<-'EOF'
 	import hashlib, json, os, sys, datetime
 	manifest, ident, tag, stage, root, wine_unix, dxmt_v, dxvk_v, commit, mingw = sys.argv[1:]
@@ -74,7 +78,6 @@ python3 -I - "$ROOT/builds.json" "$id" "$tag" "$stage" "$ROOT" "$wine_unix" \
 	    "revision": b["revision"],
 	    "crossover": {k: b["crossover"][k] for k in ("version", "public_version", "wine", "unix_arches")},
 	    "dxmt": lib("dxmt", dxmt_v),
-	    "dxvk": lib("dxvk", dxvk_v),
 	    "build": {
 	        "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 	        "varbor_engines_commit": commit,
@@ -83,12 +86,19 @@ python3 -I - "$ROOT/builds.json" "$id" "$tag" "$stage" "$ROOT" "$wine_unix" \
 	        "wine_unix_libs": wine_unix,
 	    },
 	    "licenses": {
-	        "dxmt": "LGPL-2.1-or-later (licenses/DXMT-LICENSE, DXMT-COPYING.LIB)",
+	        "dxmt": "LGPL-2.1-or-later (licenses/DXMT-LICENSE, DXMT-COPYING.LIB)"
+	        if os.path.exists(os.path.join(stage, "licenses", "DXMT-COPYING.LIB"))
+	        else "MIT (licenses/DXMT-LICENSE)",
 	        "dxvk": "Zlib (licenses/DXVK-LICENSE); CrossOver changes by CodeWeavers, Inc.",
 	        "llvm": "Apache-2.0 WITH LLVM-exception (licenses/LLVM-LICENSE.TXT), statically linked into winemetal.so",
 	    },
 	    "source": f"varbor-engines-{tag}-src.tar.gz",
 	}
+	if b["dxvk"].get("repo"):
+	    meta["dxvk"] = lib("dxvk", dxvk_v)
+	else:
+	    meta["dxvk"] = {"stock_version": b["dxvk"]["stock"]["version"], "note": b["dxvk"].get("note", "not built: stock")}
+	    del meta["licenses"]["dxvk"]
 	json.dump(meta, open(os.path.join(stage, "metadata.json"), "w"), indent=2)
 	EOF
 
